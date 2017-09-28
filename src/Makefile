@@ -18,7 +18,7 @@ $(ATARGET): $(AOFILES)
 treedriver.o: treedriver.f90
 	$(CC) $(FFLAGS) -c $<
 
-tree_cp.o: tree_pc.f90 
+tree_pc.o: tree_pc.f90 
 	$(CC) $(FFLAGS) -c $<
 
 exact_coul.o: exact_coul.f90

@@ -6,73 +6,77 @@
 
 ! runtime parameters
 
-      INTEGER :: numparsS, numparsT
-      INTEGER :: ftype, pot_type
-      REAL(KIND=r8) :: kappa, eta, eps, T
+      INTEGER :: numparsS, numparsT, ftype, numsolv
+      REAL(KIND=r8) :: voxvol
 
 ! arrays for coordinates, charge, force calculations 
 
-      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: xS,yS,zS,qS !source particles
-      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: xT,yT,zT !target particles
-      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: denergy
+      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: xT,yT,zT,qT !target particles
+      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:,:) :: dforces
+      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: qvdens, qvtemp
+      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:,:) :: guv
+      REAL(KIND=r8),DIMENSION(6) :: xyzminmax
+      INTEGER,DIMENSION(3) :: xyzdim
 
-! variables for potential energy computation
+! variables needed for output files and cpu time
 
-      REAL(KIND=r8) :: dpeng
-
-! variables needed for f90 DATE_AND_TIME intrinsic
-
-      INTEGER,DIMENSION(8) :: time1,time2 
-      CHARACTER (LEN=8)  :: datec
-      CHARACTER (LEN=10) :: timec
-      CHARACTER (LEN=5)  :: zonec
-      CHARACTER (LEN=30) :: sampin1,sampin2,sampout
-      REAL(KIND=r8)      :: timedirect
+      CHARACTER (LEN=25) :: sampin1,sampin2,sampout
+      REAL(KIND=r8)      :: timedirect,timebeg,timeend
 
 ! local variables
 
-      INTEGER :: i,j,err, stat
+      INTEGER :: i,j,err,stat
       CHARACTER (LEN=10) :: c1, c2, c3, c4, c5, c6, c7
       REAL(KIND=r8) :: a1, a2, a3, a4
 
 ! EXECUTABLE STATEMENTS
-      WRITE(6,*) 'Enter the name of input file 1 (xyzq source data)'
+      WRITE(6,*) 'Enter the name of input file 1 (xyzq target data)'
       READ(5,*) sampin1
       WRITE(6,*) 'Enter the type of input file 1 (0 is pqr, 1 is flat)'
       READ(5,*) ftype
-      WRITE(6,*) 'Enter the name of input file 2 (xyz target positions)'
+      WRITE(6,*) 'Enter the name of input file 2 (source grid correlation data)'
       READ(5,*) sampin2
       WRITE(6,*) 'Enter the name of output file'
       READ(5,*) sampout
-      WRITE(6,*) 'Enter particle number for source and target'
-      READ(5,*) numparsS, numparsT
 
-      WRITE(6,*) 'Enter kappa value'
-      READ(5,*) kappa 
-      WRITE(6,*) 'Enter eta value'
-      READ(5,*) eta 
-      WRITE(6,*) 'Enter eps value'
-      READ(5,*) eps 
-      WRITE(6,*) 'Enter T value'
-      READ(5,*) T 
+      WRITE(6,*) 'Enter particle number for targets'
+      READ(5,*) numparsT
+      WRITE(6,*) 'Enter voxvol value'
+      READ(5,*) voxvol
+      WRITE(6,*) 'Enter number of solvent types'
+      READ(5,*) numsolv
 
-      WRITE(6,*) 'Enter potential type (0 total corr asym; 1 direct corr asym)'
-      READ(5,*) pot_type 
+      ALLOCATE(qvdens(numsolv),qvtemp(numsolv),STAT=err)
+      IF (err .NE. 0) THEN
+          WRITE(6,*) 'Error allocating arrays for qvdens,qvtemp! '
+          STOP
+      END IF
+      WRITE(6,*) 'Enter qvdens, qvtemp for each solvent atom type'
+      DO i=1,numsolv
+          READ(5,*) qvdens(i), qvtemp(i)
+      END DO
 
+      WRITE(6,*) 'Enter xyzminmax source grid limits'
+      READ(5,*) xyzminmax(1),xyzminmax(2),xyzminmax(3)
+      READ(5,*) xyzminmax(4),xyzminmax(5),xyzminmax(6)
+      WRITE(6,*) 'Enter xyzdim source grid dimensions'
+      READ(5,*) xyzdim(1),xyzdim(2),xyzdim(3)
 
-      ALLOCATE(xS(numparsS),yS(numparsS),zS(numparsS),qS(numparsS),STAT=err)
+      numparsS=xyzdim(1)*xyzdim(2)*xyzdim(3)
+
+      ALLOCATE(xT(numparsT),yT(numparsT),zT(numparsT),qT(numparsT),STAT=err)
       IF (err .NE. 0) THEN
           WRITE(6,*) 'Error allocating arrays for xS, yS, zS and qS! '
           STOP
       END IF
 
-      ALLOCATE(xT(numparsT),yT(numparsT),zT(numparsT),STAT=err)
+      ALLOCATE(guv(numparsS,numsolv),STAT=err)
       IF (err .NE. 0) THEN
-          WRITE(6,*) 'Error allocating arrays for xT, yT, zT ! '
+          WRITE(6,*) 'Error allocating arrays for guv! '
           STOP
       END IF
 
-      ALLOCATE(denergy(numparsT),STAT=err)
+      ALLOCATE(dforces(3,numparsT),STAT=err)
       IF (err .NE. 0) THEN
           WRITE(6,*) 'Error allocating tenergy or denergy! '
           STOP
@@ -88,199 +92,145 @@
               IF (stat /= 0) EXIT
               IF (c1(1:4) == 'ATOM') THEN
                   WRITE(6,'(A1,A,I12,A,I12)',ADVANCE='NO')  & 
-                        char(13), " Reading in source ", i, " of ", numparsS
-                  xS(i) = a1
-                  yS(i) = a2
-                  zS(i) = a3
-                  qS(i) = a4
+                        char(13), " Reading in source ", i, " of ", numparsT
+                  xT(i) = a1
+                  yT(i) = a2
+                  zT(i) = a3
+                  qT(i) = a4
                   i = i + 1
               END IF
           END DO
 
       ELSE
-          DO i=1,numparsS
+          DO i=1,numparsT
               WRITE(6,'(A1,A,I12,A,I12)',ADVANCE='NO')  & 
-                    char(13), " Reading in source ", i, " of ", numparsS
-              READ(82,*) xS(i),yS(i),zS(i),qS(i)
+                    char(13), " Reading in source ", i, " of ", numparsT
+              READ(82,*) xT(i),yT(i),zT(i),qT(i)
 !             READ(82,'(F15.10,3F16.10)') xS(i),yS(i),zS(i),qS(i)
           END DO
       END IF
      
       CLOSE(82)
 
+! Read in the values for the correlation at each source grid point
       OPEN(unit=83,file=sampin2,status='old',action='read')
 
-      print *
-      print *, "Reading in targets..."
-      DO i=1,numparsT
-         READ(83,*) xT(i),yT(i),zT(i)
-         IF (MOD(i, 100000) == 0 ) THEN
-            WRITE(6,'(A1,A,I12,A,I12)',ADVANCE='NO')  & 
-                  char(13), " Reading in target ", i, " of ", numparsT
-         END IF
+      WRITE(6,*) ' '
+      WRITE(6,*) "Reading in source grid point correlation..."
+
+      DO i=1,numparsS
+          READ(83,*) guv(i,:)
+          IF ( MOD(i, 100000) == 0) THEN
+             WRITE(6,'(A1,A,I12,A,I12)',ADVANCE='NO')  &
+                    char(13), " Reading in guv ", i, " of ", numparsS
+          END IF
       END DO
 
-      CLOSE(83)
+      CLOSE (83)
+
 
       OPEN(unit=85,file=sampout,status='replace',action='write')
 
-      CALL DATE_AND_TIME(datec,timec,zonec,time1)
-
       print *
       print *, "Calculating potentials by direct summation..."
-      CALL DIRECT_ENG(xS,yS,zS,qS,xT,yT,zT,numparsS,numparsT,denergy,dpeng, &
-                      pot_type, kappa, eta, eps, T)
 
-      CALL DATE_AND_TIME(datec,timec,zonec,time2)
-      CALL TTIME(time1,time2,timedirect)
+      CALL CPU_TIME(timebeg)
+
+      CALL DIRECT_ENG(xT, yT, zT, qT, guv, qvtemp, qvdens, &
+                      xyzminmax, xyzdim, &
+                      numparsS, numparsT, numsolv, voxvol, dforces)
+
+      CALL CPU_TIME(timeend)
+      timedirect = timeend - timebeg
 
       print *, "Writing direct results to file..."
 
       WRITE(85,13)timedirect
       DO j=1,numparsT
-         WRITE(85,14) j, denergy(j)
+         WRITE(85,*) dforces(1,j), dforces(2,j), dforces(3,j)
       END DO
 
       CLOSE(unit=85)
 
       print *
-      print *, "Total energy sum: ", dpeng
       print *,   "Total time (s): ", timedirect
       print *
 
  13   FORMAT(E24.16)
- 14   FORMAT(I12,2X,E24.16)
 100   FORMAT(A7, A5, A5, A7, A6, F8.3, F8.3, F8.3, F8.4, A8, A9) 
 
       END PROGRAM TREEDRIVER
 
 !!!!!!!!!!!!!!
 
-      SUBROUTINE DIRECT_ENG(xS,yS,zS,qS,xT,yT,zT,numparsS,numparsT,denergy,dpeng, &
-                            pot_type, kappa, eta, eps, T) 
-
+      SUBROUTINE DIRECT_ENG(xT, yT, zT, qT, guv, qvtemp, qvdens, &
+                            xyzminmax, xyzdim, &
+                            numparsS, numparsT, numsolv, voxvol, dforces)
       IMPLICIT NONE
 
       INTEGER,PARAMETER :: r8=SELECTED_REAL_KIND(12)
-      REAL(KIND=r8),PARAMETER :: kb = 0.001987215873_r8
-      REAL(KIND=r8),PARAMETER :: coulomb = 332.0637790571_r8
 
-      INTEGER,INTENT(IN) :: numparsS,numparsT 
-      REAL(KIND=r8),DIMENSION(numparsS),INTENT(IN) :: xS,yS,zS,qS
-      REAL(KIND=r8),DIMENSION(numparsT),INTENT(IN) :: xT,yT,zT
+      INTEGER,INTENT(IN) :: numparsS, numparsT, numsolv
+      REAL(KIND=r8),DIMENSION(numparsT),INTENT(IN) :: xT, yT, zT, qT
+      REAL(KIND=r8),DIMENSION(6),INTENT(IN) :: xyzminmax
+      INTEGER,DIMENSION(3),INTENT(IN) :: xyzdim
+      REAL(KIND=r8),DIMENSION(numparsS,numsolv),INTENT(IN) :: guv
+      REAL(KIND=r8),DIMENSION(numsolv),INTENT(IN) :: qvdens
+      REAL(KIND=r8),DIMENSION(numsolv),INTENT(IN) :: qvtemp
+      REAL(KIND=r8),INTENT(IN) :: voxvol
 
-      REAL(KIND=r8),INTENT(IN) :: kappa, eta, eps, T
-      INTEGER,INTENT(IN) :: pot_type
-
-      REAL(KIND=r8),DIMENSION(numparsT),INTENT(INOUT) :: denergy
-      REAL(KIND=r8),INTENT(INOUT) :: dpeng
+      REAL(KIND=r8),DIMENSION(3,numparsT),INTENT(OUT) :: dforces
 
 ! local variables 
    
-      INTEGER :: i,j
-      REAL(KIND=r8) :: tx,ty,tz,xi,yi,zi,teng, rad
+      INTEGER :: i,j,k,kk,jj,nn,yzdim
+      REAL(KIND=r8) :: tx,ty,tz,xi,yi,zi,dist
+      REAL(KIND=r8),DIMENSION(3) :: xyz_dd
 
-      dpeng=0.0_r8; denergy=0.0_r8
+      xyz_dd(1) = (xyzminmax(2)-xyzminmax(1)) / (xyzdim(1)-1)
+      xyz_dd(2) = (xyzminmax(4)-xyzminmax(3)) / (xyzdim(2)-1)
+      xyz_dd(3) = (xyzminmax(6)-xyzminmax(5)) / (xyzdim(3)-1)
 
-      IF (pot_type == 0) THEN
-          DO i=1,numparsT
-              xi=xT(i)
-              yi=yT(i)
-              zi=zT(i)
-              teng=0.0_r8
-              DO j=1,numparsS
-                  tx=xi-xS(j)
-                  ty=yi-yS(j)
-                  tz=zi-zS(j)
-                  rad = SQRT(tx*tx + ty*ty + tz*tz)
-                  teng = teng + qS(j) / rad &
-                       * (exp(-kappa*rad) * erfc(kappa*eta/2 - rad/eta) &
-                       - exp(kappa*rad) * erfc(kappa*eta/2 + rad/eta))
+      xi = xyzminmax(1)-xyz_dd(1)
+      yzdim = xyzdim(2)*xyzdim(3)
+      dforces = 0.0_r8
+
+      DO i=0,xyzdim(1)-1
+          xi = xi + xyz_dd(1)
+          yi = xyzminmax(3)-xyz_dd(2)
+          DO j=0,xyzdim(2)-1
+              yi = yi + xyz_dd(2)
+              zi = xyzminmax(5)-xyz_dd(3)
+              DO k=0,xyzdim(3)-1
+                  zi = zi + xyz_dd(3)
+                  nn = (i*yzdim) + (j*xyzdim(3)) + k + 1
+
+                  DO jj=1,numparsT
+                      tx=xi-xT(jj)
+                      ty=yi-yT(jj)
+                      tz=zi-zT(jj)
+
+                      dist = 1.0_r8 / (tx*tx + ty*ty + tz*tz)**(1.5_r8)
+                      DO kk=1,numsolv
+                          dforces(1,jj) = dforces(1,jj) + tx * dist &
+                                        * guv(nn,kk) * qvdens(kk) * qvtemp(kk)
+                          dforces(2,jj) = dforces(2,jj) + ty * dist &
+                                        * guv(nn,kk) * qvdens(kk) * qvtemp(kk)
+                          dforces(3,jj) = dforces(3,jj) + tz * dist &
+                                        * guv(nn,kk) * qvdens(kk) * qvtemp(kk)
+                      END DO
+                  END DO
+
               END DO
-              denergy(i) = -teng * exp((kappa*eta)**2 / 4) / (2*eps) * sqrt(coulomb/kb/T)
           END DO
+      END DO
 
-      ELSE IF (pot_type == 1) THEN
-          DO i=1,numparsT
-              xi=xT(i)
-              yi=yT(i)
-              zi=zT(i)
-              teng=0.0_r8
-              DO j=1,numparsS
-                  tx=xi-xS(j)
-                  ty=yi-yS(j)
-                  tz=zi-zS(j)
-                  rad = SQRT(tx*tx + ty*ty + tz*tz)
-                  teng = teng + qS(j) / rad * erf(rad/eta)
-              END DO
+      DO jj=1,numparsT
+          dforces(1,jj) = qT(jj) * dforces(1,jj)
+          dforces(2,jj) = qT(jj) * dforces(2,jj)
+          dforces(3,jj) = qT(jj) * dforces(3,jj)
+      END DO
 
-              denergy(i) = -teng * sqrt(coulomb/kb/T)
-          END DO
-
-      ELSE IF (pot_type == 2) THEN
-          DO i=1,numparsT
-              xi=xT(i)
-              yi=yT(i)
-              zi=zT(i)
-              teng=0.0_r8
-              DO j=1,numparsS
-                  tx=xi-xS(j)
-                  ty=yi-yS(j)
-                  tz=zi-zS(j)
-                  rad = SQRT(tx*tx + ty*ty + tz*tz)
-                  teng = teng + qS(j) / rad
-              END DO
-
-              denergy(i) = -teng * sqrt(coulomb/kb/T)
-          END DO
-      END IF
-
-      print *, "Summing up energies..."
-      dpeng=SUM(denergy)
+      dforces = dforces * voxvol
       
-      END SUBROUTINE DIRECT_ENG  
-
-!!!!!!!!!!!!!!!!!!
-      SUBROUTINE TTIME(timebeg,timeend,totaltime)
-      IMPLICIT NONE
-!
-! TTIME computes the time difference in seconds between
-! the timestamps TIMEBEG and TIMEEND returned by the 
-! f90 intrinsic DATE_AND_TIME
-!
-      INTEGER,PARAMETER :: r8=SELECTED_REAL_KIND(12)
-      INTEGER,DIMENSION(8),INTENT(INOUT) :: timebeg,timeend
-      REAL(KIND=r8),INTENT(OUT) :: totaltime
-
-! TIMEEND is modifed by borrowing in case each of its fields
-! are not .GE. to the corresponding field in TIMEBEG (up to
-! and including days) 
-
-      IF (timeend(8) .LT. timebeg(8)) THEN
-          timeend(8)=timeend(8)+1000
-          timeend(7)=timeend(7)-1
-      END IF
-      IF (timeend(7) .LT. timebeg(7)) THEN
-          timeend(7)=timeend(7)+60
-          timeend(6)=timeend(6)-1
-      END IF
-      IF (timeend(6) .LT. timebeg(6)) THEN
-          timeend(6)=timeend(6)+60
-          timeend(5)=timeend(5)-1
-      END IF
-      IF (timeend(5) .LT. timebeg(5)) THEN
-          timeend(5)=timeend(5)+24
-          timeend(3)=timeend(3)-1
-      END IF
-
-      totaltime=  REAL(timeend(8)-timebeg(8),KIND=r8) +          &
-            1000.0_r8*( REAL(timeend(7)-timebeg(7),KIND=r8) +    &
-              60.0_r8*( REAL(timeend(6)-timebeg(6),KIND=r8) +    &
-              60.0_r8*( REAL(timeend(5)-timebeg(5),KIND=r8) +    &
-              24.0_r8*( REAL(timeend(3)-timebeg(3),KIND=r8)))))
-      totaltime=totaltime/1000.0_r8
-
-
-      RETURN
-      END SUBROUTINE TTIME
-   
+      END SUBROUTINE DIRECT_ENG

@@ -391,8 +391,10 @@
 !!!!!!!!!!!!!!
 
 
-      SUBROUTINE PC_TREECODE_FORCES(p, xS,yS,zS,qS, EnP, &
-                                     numparsS, numparsT)
+      SUBROUTINE PC_TREECODE_FORCES(p, guv, &              !source info
+                                    xT, yT, zT, qT,  &     !target info
+                                    numparsS, numparsT, &  !number sources, targets
+                                    forcesT)               !output
       IMPLICIT NONE
 !
 ! CP_TREECODE is the driver routine which calls COMPUTE_CP1 for each
@@ -406,27 +408,36 @@
  
       INTEGER,INTENT(IN) :: numparsS,numparsT
       TYPE(tnode),POINTER :: p  
-      REAL(KIND=r8),DIMENSION(numparsS),INTENT(IN) :: xS,yS,zS,qS
-      REAL(KIND=r8),DIMENSION(numparsT),INTENT(INOUT) :: EnP
+      REAL(KIND=r8),DIMENSION(numparsT),INTENT(IN) :: xT,yT,zT,qT
+      REAL(KIND=r8),DIMENSION(numparsS),INTENT(IN) :: guv
+      REAL(KIND=r8),DIMENSION(3,numparsT),INTENT(INOUT) :: forcesT
  
 ! local variables
 
-      INTEGER :: i,j
+      INTEGER :: i
+      REAL(KIND=r8),DIMENSION(3) :: force(3)
 
-      EnP=0.0_r8
-      DO i=1,numparsS
-         tarpos(1)=xS(i)
-         tarpos(2)=yS(i)
-         tarpos(3)=zS(i)
-         tarposq=qS(i)
+      forcesT=0.0_r8
 
-         DO j=1,p%num_children
-            CALL COMPUTE_CP1_COULOMB(p%child(j)%p_to_tnode,EnP, &
-                                     numparsT)
-         END DO
+
+      DO i=1,numparsT
+          force=0.0_r8
+          tarpos(1)=xT(i)
+          tarpos(2)=yT(i)
+          tarpos(3)=zT(i)
+          tarposq=qT(i)
+
+          CALL COMPUTE_PC(p,guv,numparsS,force)
+          !DO j=1,p%num_children
+          !    CALL COMPUTE_PC(p%child(j)%p_to_tnode,guv,numparsS,forcetemp)
+          !    force = force + forcetemp
+          !END DO
+
+          forcesT(1,i) = tarposq * force(1)
+          forcesT(2,i) = tarposq * force(2)
+          forcesT(3,i) = tarposq * force(3)
+
       END DO
-
-      CALL COMPUTE_CP2(p,EnP,numparsT)
 
       RETURN
       END SUBROUTINE PC_TREECODE_FORCES
@@ -435,8 +446,7 @@
 !!!!!!!!!!!!!!!!!!!!!!!!
 
 
-      RECURSIVE SUBROUTINE COMPUTE_CP1_COULOMB(p,EnP,arrdim)
-
+      RECURSIVE SUBROUTINE COMPUTE_PC(p,guv,numpars,force)
       IMPLICIT NONE
 
 ! COMPUTE_CP1 is the recursive routine for computing the interaction
@@ -448,31 +458,30 @@
 ! via a call to the routine COMP_DIRECT
 !
 
-      INTEGER,INTENT(IN) :: arrdim
-      TYPE(tnode),POINTER :: p      
-      REAL(KIND=r8),DIMENSION(arrdim),INTENT(INOUT) :: EnP
+      INTEGER,INTENT(IN) :: numpars
+      TYPE(tnode),POINTER :: p
+      REAL(KIND=r8),DIMENSION(numpars),INTENT(IN) :: guv
+      REAL(KIND=r8),DIMENSION(3),INTENT(OUT) :: force(3)
 
 ! local variables
 
-      REAL(KIND=r8),DIMENSION(3) :: xyz_t
+      REAL(KIND=r8),DIMENSION(3) :: xyz_t, forcetemp
       REAL(KIND=r8) :: distsq
-      INTEGER :: i, err
+      INTEGER :: i, err, kk, k1, k2, k3
 
 ! determine DISTSQ for MAC test
 
       xyz_t=tarpos-p%xyz_mid
       distsq=SUM(xyz_t**2)
 
-! intialize potential energy and force 
+! intialize potential energy and force
+
+      force = 0.0_r8
 
 ! If MAC is accepted and there is more than 1 particle in the 
 ! box use the expansion for the approximation.
       IF ((p%sqradius .LT. distsq*thetasq) .AND. &
          (p%sqradius .NE. 0.0_r8)) THEN
-
-         a=0.0_r8
-
-         CALL COMP_TCOEFF_COULOMB(xyz_t(1),xyz_t(2),xyz_t(3))
 
          IF (p%exist_ms .EQ. 0) THEN
              ALLOCATE(p%ms(torderflat),STAT=err)
@@ -483,123 +492,48 @@
 
              p%ms=0.0_r8
              p%exist_ms=1
+             CALL COMP_MS(p, guv, numpars)
          END IF
 
-         CALL COMP_CMS(p)   
-    
+         a=0.0_r8
+         CALL COMP_TCOEFF(xyz_t(1), xyz_t(2), xyz_t(3))
+
+         kk = 0
+         DO k3 = 0, torder
+            DO k2 = 0, torder-k3
+               DO k1 = 0, torder-k3-k2
+                  kk = kk + 1
+                  force(1) = force(1) + cf(k1) * a(k1+1,k2,k3) * p%ms(kk)
+                  force(2) = force(2) + cf(k2) * a(k1,k2+1,k3) * p%ms(kk)
+                  force(3) = force(3) + cf(k3) * a(k1,k2,k3+1) * p%ms(kk)
+               END DO
+            END DO
+         END DO
+
       ELSE
 
 ! If MAC fails check to see if the are children. If not, perform direct 
 ! calculation.  If there are children, call routine recursively for each.
 !
          IF (p%num_children .EQ. 0) THEN
-            CALL COMP_DIRECT_COULOMB(p, EnP, arrdim)
+            CALL COMP_DIRECT(p, guv, numpars, force)
          ELSE
             DO i=1,p%num_children
-               CALL COMPUTE_CP1_COULOMB(p%child(i)%p_to_tnode, EnP, arrdim)
+               CALL COMPUTE_PC(p%child(i)%p_to_tnode, guv, &
+                               numpars, forcetemp)
+               force = force + forcetemp
             END DO  
          END IF 
       END IF
 
       RETURN
-      END SUBROUTINE COMPUTE_CP1_COULOMB
+      END SUBROUTINE COMPUTE_PC
 
 
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!
 
 
-      RECURSIVE SUBROUTINE COMPUTE_CP2(ap,EnP,arrdim)
-
-        IMPLICIT NONE
-
-! COMPUTE_CP2 is a recursive routine that evaluates the power series  
-! approximation of the potential at the targets in a cluster via 
-! a 3-D Horner's rule.  
-!
-        INTEGER,INTENT(IN) :: arrdim
-        TYPE(tnode),POINTER :: ap
-        REAL(KIND=r8),DIMENSION(arrdim),INTENT(INOUT) :: EnP
-
-! local variables
-
-        REAL(KIND=r8) :: tx,ty,peng,dx,dy,dz,xl,yl,zl,xm,ym,zm
-        INTEGER :: xlind, ylind, zlind, xhind, yhind, zhind, yzhind
-        INTEGER :: i,nn,j,k,k1,k2,k3,kk,porder,porder1
-
-        porder=torder
-        porder1=porder-1
-
-        IF (ap%exist_ms==1) THEN
-
-          xl=ap%xyz_min(1)
-          yl=ap%xyz_min(2)
-          zl=ap%xyz_min(3)
-
-          xm=ap%xyz_mid(1)
-          ym=ap%xyz_mid(2)
-          zm=ap%xyz_mid(3)
-
-          xlind=ap%xyz_lowindex(1)
-          ylind=ap%xyz_lowindex(2)
-          zlind=ap%xyz_lowindex(3)
-
-          xhind=ap%xyz_highindex(1)
-          yhind=ap%xyz_highindex(2)
-          zhind=ap%xyz_highindex(3)
-
-          yzhind=xyz_dimglob(2)*xyz_dimglob(3)
-          DO i=xlind,xhind
-             DO j=ylind,yhind
-                DO k=zlind,zhind
-
-                   nn=(i*yzhind)+(j*xyz_dimglob(3))+k+1
-
-                   dx=xl+(i-xlind)*xyz_ddglob(1)-xm
-                   dy=yl+(j-ylind)*xyz_ddglob(2)-ym
-                   dz=zl+(k-zlind)*xyz_ddglob(3)-zm
-
-                   kk=1
-                   peng=ap%ms(kk)
-
-                   DO k3=porder1,0,-1
-                      kk=kk+1
-                      ty=ap%ms(kk)
-
-                      DO k2=porder1-k3,0,-1
-                         kk=kk+1
-                         tx=ap%ms(kk)
-
-                         DO k1=porder1-k3-k2,0,-1
-                            kk=kk+1
-                            tx  = dx * tx + ap%ms(kk)
-                         END DO
-
-                         ty  = dy * ty + tx
-                      END DO
-
-                      peng = dz * peng + ty
-                   END DO
-
-                   EnP(nn)=EnP(nn)+peng
-
-                END DO
-             END DO
-          END DO
-
-        END IF
-
-        DO j=1,ap%num_children
-           CALL COMPUTE_CP2(ap%child(j)%p_to_tnode,EnP,arrdim)
-        END DO
-
-        RETURN
-      END SUBROUTINE COMPUTE_CP2
-
-
-!!!!!!!!!!!!!!!
-
-
-      SUBROUTINE COMP_TCOEFF_COULOMB(dx,dy,dz)
+      SUBROUTINE COMP_TCOEFF(dx,dy,dz)
       IMPLICIT NONE
 !
 ! COMP_TCOEFF computes the Taylor coefficients of the potential
@@ -713,42 +647,84 @@
 
       RETURN
 
-      END SUBROUTINE COMP_TCOEFF_COULOMB
+      END SUBROUTINE COMP_TCOEFF
 
 
 !!!!!!!!!!!!!!!
 
 
-      SUBROUTINE COMP_CMS(p)
+      SUBROUTINE COMP_MS(ap,guv,numpars)
       IMPLICIT NONE
 !
 ! COMP_CMS computes the moments for node P needed in the Taylor approximation
 !
-      TYPE(tnode),POINTER :: p 
+      INTEGER,INTENT(IN) :: numpars
+      TYPE(tnode),POINTER :: ap
+      REAL(KIND=r8),DIMENSION(numpars),INTENT(IN) :: guv
 
-! local variables
+      REAL(KIND=r8) :: tx,ty,tz,dx,dy,dz,xl,yl,zl,xm,ym,zm
+      INTEGER :: xlind, ylind, zlind, xhind, yhind, zhind, yzhind
+      INTEGER :: i,nn,j,k,k1,k2,k3,kk
 
-      INTEGER :: k1,k2,k3,kk
 
-      kk=0
-        
-      DO k3=torder,0,-1
-         DO k2=torder-k3,0,-1
-            DO k1=torder-k3-k2,0,-1
-               kk=kk+1
-               p%ms(kk)=p%ms(kk)+tarposq*a(k1,k2,k3)
-           END DO
+      xl=ap%xyz_min(1)
+      yl=ap%xyz_min(2)
+      zl=ap%xyz_min(3)
+
+      xm=ap%xyz_mid(1)
+      ym=ap%xyz_mid(2)
+      zm=ap%xyz_mid(3)
+
+      xlind=ap%xyz_lowindex(1)
+      ylind=ap%xyz_lowindex(2)
+      zlind=ap%xyz_lowindex(3)
+
+      xhind=ap%xyz_highindex(1)
+      yhind=ap%xyz_highindex(2)
+      zhind=ap%xyz_highindex(3)
+
+      yzhind=xyz_dimglob(2)*xyz_dimglob(3)
+      ap%ms=0.0_r8
+
+      DO i=xlind,xhind
+         DO j=ylind,yhind
+            DO k=zlind,zhind
+
+               nn=(i*yzhind)+(j*xyz_dimglob(3))+k+1
+
+               dx=xl+(i-xlind)*xyz_ddglob(1)-xm
+               dy=yl+(j-ylind)*xyz_ddglob(2)-ym
+               dz=zl+(k-zlind)*xyz_ddglob(3)-zm
+
+               kk = 0
+               tz = 1.0_r8
+
+               DO k3 = 0, torder
+                  ty = 1.0_r8
+                  DO k2 = 0, torder-k3
+                     tx = 1.0_r8
+                     DO k1 = 0, torder-k3-k2
+                        kk = kk + 1
+                        ap%ms(kk) = ap%ms(kk) + guv(nn)*tx*ty*tz
+                        tx = dx * tx
+                     END DO
+                     ty = dy * ty
+                  END DO
+                  tz = tz * dz
+               END DO
+
+            END DO
          END DO
       END DO
          
       RETURN
-      END SUBROUTINE COMP_CMS
+      END SUBROUTINE COMP_MS
 
 
 !!!!!!!!!!!!!!!!!!!!!!!!
 
 
-      SUBROUTINE COMP_DIRECT_COULOMB(p, EnP, arrdim)
+      SUBROUTINE COMP_DIRECT(p, guv, numpars, force)
 
       IMPLICIT NONE
 !
@@ -756,14 +732,15 @@
 ! in the current cluster due to the 
 ! current source  (determined by the global variable TARPOS). 
 !
-      INTEGER,INTENT(IN) :: arrdim
+      INTEGER,INTENT(IN) :: numpars
       TYPE(tnode),POINTER :: p
-      REAL(KIND=r8),DIMENSION(arrdim),INTENT(INOUT) :: EnP
+      REAL(KIND=r8),DIMENSION(numpars),INTENT(IN) :: guv
+      REAL(KIND=r8),DIMENSION(3),INTENT(OUT) :: force(3)
 
 ! local variables
 
       INTEGER :: i,j,k,nn
-      REAL(KIND=r8) :: tx,ty,tz,xl,yl,zl
+      REAL(KIND=r8) :: tx,ty,tz,xl,yl,zl,dist
       INTEGER :: xlind,ylind,zlind,xhind,yhind,zhind,yzhind
 
       xl=p%xyz_min(1)
@@ -778,24 +755,32 @@
       yhind=p%xyz_highindex(2)
       zhind=p%xyz_highindex(3)
 
+      force = 0.0_r8
       yzhind=xyz_dimglob(2)*xyz_dimglob(3)
+
       DO i=xlind,xhind
+         tx=xl+(i-xlind)*xyz_ddglob(1)-tarpos(1)
          DO j=ylind,yhind
+            ty=yl+(j-ylind)*xyz_ddglob(2)-tarpos(2)
             DO k=zlind,zhind
-
-               nn=(i*yzhind)+(j*xyz_dimglob(3))+k+1
-               tx=xl+(i-xlind)*xyz_ddglob(1)-tarpos(1)
-               ty=yl+(j-ylind)*xyz_ddglob(2)-tarpos(2)
                tz=zl+(k-zlind)*xyz_ddglob(3)-tarpos(3)
+               nn=(i*yzhind)+(j*xyz_dimglob(3))+k+1
 
-               EnP(nn) = EnP(nn) - tarposq / SQRT(tx*tx + ty*ty + tz*tz)
+               !print *, tx,ty,tz, nn, guv(nn)
+               !print *, i,j,k, nn, tx+tarpos(1),ty+tarpos(2),tz+tarpos(3)
+
+               dist = 1.0_r8 / (tx*tx + ty*ty + tz*tz)**(1.5_r8)
+
+               force(1) = force(1) + guv(nn) * tx * dist
+               force(2) = force(2) + guv(nn) * ty * dist
+               force(3) = force(3) + guv(nn) * tz * dist
 
             END DO
          END DO
       END DO   
 
       RETURN
-      END SUBROUTINE COMP_DIRECT_COULOMB
+      END SUBROUTINE COMP_DIRECT
 
 
 !!!!!!!!!!!!!!!!!
@@ -873,7 +858,7 @@
 
 !!!!!!!!!!!!!!!
 
-      SUBROUTINE TREECODE(xT, yT, zT, qT, &
+      SUBROUTINE TREECODE_FOR(xT, yT, zT, qT, &
                       guv, xyzminmax, xyzdim, &
                       numparsS, numparsT, &
                       order,theta, maxparnodeS, &
@@ -890,7 +875,7 @@
 ! xyzminmax      :: min, max source grid limits
 ! numparS        :: number of sources
 ! numparT        :: number of targets
-! tEn            :: array of dimension (3,numparT) for storing forces
+! tEn            :: array of dimension (3,numparsT) for storing forces
 !                   at each target
 ! maxparnodeS    :: maximum number of particles in a leaf
 ! timetree       :: The total time for the treecode computation
@@ -917,11 +902,7 @@
 
 ! variables needed for f90 DATE_AND_TIME intrinsic
 
-      INTEGER,DIMENSION(8) :: time1,time2 
-      CHARACTER (LEN=8)  :: datec
-      CHARACTER (LEN=10) :: timec
-      CHARACTER (LEN=5)  :: zonec
-      REAL(KIND=r8)      :: totaltime
+      REAL(KIND=r8) :: totaltime, timebeg, timeend
 
 
 ! Call SETUP to allocate arrays for Taylor expansions
@@ -931,24 +912,22 @@
 
 ! nullify pointer to root of tree (TROOT) and create tree
 
-      NULLIFY(trootS)  
-
-      CALL DATE_AND_TIME(datec,timec,zonec,time1)
+      NULLIFY(trootS)
 
 ! set global variables to track tree levels during construction
 
       level=0
       minlevel=50000
+      maxlevel=0
 
       WRITE(6,*) ' '
       WRITE(6,*) 'Creating tree...'
 
-      maxlevel=0
+      CALL CPU_TIME(timebeg)
       CALL CREATE_TREE_N0(trootS,maxparnodeS,xyzminmax,xyzdim,xyzind,level)
+      CALL CPU_TIME(timeend)
 
-      CALL DATE_AND_TIME(datec,timec,zonec,time2)
-      CALL TTIME(time1,time2,totaltime)
-      timetree=totaltime
+      timetree = timeend - timebeg
 
 ! print tree information to stdout 
 
@@ -966,20 +945,18 @@
          WRITE(6,*) '     maxparnode: ',maxparnodeS
          WRITE(6,*) ' '
  
-      CALL DATE_AND_TIME(datec,timec,zonec,time1)
+      CALL CPU_TIME(timebeg)
 
 !Call driver routine for cluster-particle
-      IF (pot_type == 0) THEN
-          CALL PC_TREECODE_FORCES(trootS, guv, &         !source info
-                                  xT, yT, zT, qT,  &     !target info
-                                  numparsS, numparsT, &  !number sources, targets
-                                  tEn)                   !output
+      CALL PC_TREECODE_FORCES(trootS, guv, &         !source info
+                              xT, yT, zT, qT,  &     !target info
+                              numparsS, numparsT, &  !number sources, targets
+                              tEn)                   !output
 
       tEn = tEn * voxvol
 
-      CALL DATE_AND_TIME(datec,timec,zonec,time2)
-      CALL TTIME(time1,time2,totaltime)
-      timetree = timetree + totaltime
+      CALL CPU_TIME(timeend)
+      timetree = timetree + timeend - timebeg
 
          WRITE(6,*) ' '
          WRITE(6,*) '   Finished calculation. '
@@ -997,48 +974,4 @@
 
       CALL CLEANUP(trootS)
 
-      END SUBROUTINE TREECODE
-!!!!!!!!!!!!!!!!!!
-      SUBROUTINE TTIME(timebeg,timeend,totaltime)
-      IMPLICIT NONE
-!
-! TTIME computes the time difference in seconds between
-! the timestamps TIMEBEG and TIMEEND returned by the 
-! f90 intrinsic DATE_AND_TIME
-!
-      INTEGER,PARAMETER :: r8=SELECTED_REAL_KIND(12)
-      INTEGER,DIMENSION(8),INTENT(INOUT) :: timebeg,timeend
-      REAL(KIND=r8),INTENT(OUT) :: totaltime
-
-! TIMEEND is modifed by borrowing in case each of its fields
-! are not .GE. to the corresponding field in TIMEBEG (up to
-! and including days) 
-
-      IF (timeend(8) .LT. timebeg(8)) THEN
-          timeend(8)=timeend(8)+1000
-          timeend(7)=timeend(7)-1
-      END IF
-      IF (timeend(7) .LT. timebeg(7)) THEN
-          timeend(7)=timeend(7)+60
-          timeend(6)=timeend(6)-1
-      END IF
-      IF (timeend(6) .LT. timebeg(6)) THEN
-          timeend(6)=timeend(6)+60
-          timeend(5)=timeend(5)-1
-      END IF
-      IF (timeend(5) .LT. timebeg(5)) THEN
-          timeend(5)=timeend(5)+24
-          timeend(3)=timeend(3)-1
-      END IF
-
-      totaltime=  REAL(timeend(8)-timebeg(8),KIND=r8) +          &
-            1000.0_r8*( REAL(timeend(7)-timebeg(7),KIND=r8) +    &
-              60.0_r8*( REAL(timeend(6)-timebeg(6),KIND=r8) +    &
-              60.0_r8*( REAL(timeend(5)-timebeg(5),KIND=r8) +    &
-              24.0_r8*( REAL(timeend(3)-timebeg(3),KIND=r8)))))
-      totaltime=totaltime/1000.0_r8
-
-     
-      RETURN
-      END SUBROUTINE TTIME
-
+      END SUBROUTINE TREECODE_FOR

@@ -1,9 +1,10 @@
 !
+!   Author:  Leighton W. Wilson  (lwwilson@umich.edu)
 !   Author:  Henry A. Boateng  (boateng@umich.edu)
 !   Department of Mathematics
 !   University of Michigan, Ann Arbor
 !
-!   Copyright (c) 2013. The Regents of the University of Michigan.
+!   Copyright (c) 2013, 2017. The Regents of the University of Michigan.
 !   All Rights Reserved.
 !
 !   This program is free software; you can redistribute it and/or modify
@@ -28,27 +29,22 @@
 
 ! runtime parameters
 
-      INTEGER :: numparsS,numparsT,order,maxparnodeS
-      REAL(KIND=r8) :: theta 
-
-      INTEGER :: ftype, pot_type
-      REAL(KIND=r8) :: kappa, eta, eps, T
+      INTEGER :: numparsS, numparsT, order, maxparnodeS, ftype, numsolv
+      REAL(KIND=r8) :: theta, voxvol
 
 ! arrays for coordinates and charges and energy of target particles
 
-      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: xS,yS,zS,qS  !source particles
-      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: denergy,tenergy !exact energy and energy via treecode
+      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: xT,yT,zT,qT  !source particles
+      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:,:) :: dforces,tforces !exact and treecode forces
+      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:) :: qvdens, qvtemp
+      REAL(KIND=r8),ALLOCATABLE,DIMENSION(:,:) :: guv
 
       REAL(KIND=r8),DIMENSION(6) :: xyzminmax
       INTEGER,DIMENSION(3) :: xyzdim
 
-! variables for potential energy computation
+! variables needed for output files and cpu time
 
-      REAL(KIND=r8) :: tpeng,dpeng
-
-! variables needed for f90 DATE_AND_TIME intrinsic
-
-      CHARACTER (LEN=25) :: sampin1,sampin3,sampout
+      CHARACTER (LEN=25) :: sampin1,sampin2,sampin3,sampout
       REAL(KIND=r8)      :: timedirect,timetree
 
 ! variables for error calculations
@@ -58,7 +54,7 @@
 
 ! local variables
 
-      INTEGER :: i,err,stat
+      INTEGER :: i, err, stat
       CHARACTER (LEN=10) :: c1, c2, c3, c4, c5, c6, c7
       REAL(KIND=r8) :: a1, a2, a3, a4
 
@@ -70,7 +66,7 @@
       READ(5,*) ftype
       
       WRITE(6,*) 'Enter the name of input file 2 (source grid correlation data)'
-      READ(5,*) sampin3
+      READ(5,*) sampin2
 
       WRITE(6,*) 'Enter direct forces results'
       READ(5,*) sampin3
@@ -94,7 +90,21 @@
 
 
       WRITE(6,*) 'Enter voxvol value'
-      READ(5,*) voxvol 
+      READ(5,*) voxvol
+
+      WRITE(6,*) 'Enter number of solvent types'
+      READ(5,*) numsolv
+
+      ALLOCATE(qvdens(numsolv),qvtemp(numsolv),STAT=err)
+      IF (err .NE. 0) THEN
+          WRITE(6,*) 'Error allocating arrays for qvdens,qvtemp! '
+          STOP
+      END IF
+
+      WRITE(6,*) 'Enter qvdens, qvtemp for each solvent atom type'
+      DO i=1,numsolv
+          READ(5,*) qvdens(i), qvtemp(i)
+      END DO
       
       
       WRITE(6,*) 'Enter xyzminmax source grid limits'
@@ -113,9 +123,9 @@
           STOP
       END IF
 
-      ALLOCATE(guv(numparsS),STAT=err)
+      ALLOCATE(guv(numparsS,numsolv),STAT=err)
       IF (err .NE. 0) THEN
-          WRITE(6,*) 'Error allocating arrays for xT, yT, zT and qT! '
+          WRITE(6,*) 'Error allocating arrays for guv! '
           STOP
       END IF
 
@@ -166,10 +176,10 @@
       WRITE(6,*) "Reading in source grid point correlation..."
 
       DO i=1,numparsS
-          READ(83,*) guv(i)
+          READ(83,*) guv(i,:)
           IF ( MOD(i, 100000) == 0) THEN
-             WRITE(6,'(A1,A,I12,A,I12)',ADVANCE='NO')  & 
-                    char(13), " Reading in direct ", i, " of ", numparsS
+              WRITE(6,'(A1,A,I12,A,I12)',ADVANCE='NO')  &
+                    char(13), " Reading in guv ", i, " of ", numparsS
           END IF
       END DO
 
@@ -198,12 +208,17 @@
 
 ! Calling main subroutine to approximate the energy
 
-      CALL TREECODE(xT, yT, zT, qT, &                !target particle info
-                    guv, xyzminmax, xyzdim, &        !source grid info
-                    numparsS, numparsT, &            !number of sources, targets
-                    order, theta, maxparnodeS, &     !tree info
-                    voxvol, &                        !time, parameter
-                    tforces, timetree)               !output
+      guv(:,1) = guv(:,1) * qvdens(1) * qvtemp(1)
+      DO i=2,numsolv
+          guv(:,1) = guv(:,1) + guv(:,i) * qvdens(i) * qvtemp(i)
+      END DO
+
+      CALL TREECODE_FOR(xT, yT, zT, qT, &                !target particle info
+                        guv(:,1), xyzminmax, xyzdim, &        !source grid info
+                        numparsS, numparsT, &            !number of sources, targets
+                        order, theta, maxparnodeS, &     !tree info
+                        voxvol, &                        !time, parameter
+                        tforces, timetree)               !output
 
 
       WRITE(6,*) ' '
@@ -214,10 +229,28 @@
 
 ! compute energy errors
 
+
+      DO i=1,numparsT
+         PRINT *, tforces(1,i), tforces(2,i), tforces(3,i)
+      END DO
+
+      PRINT *
+      DO i=1,numparsT
+         PRINT *, dforces(1,i), dforces(2,i), dforces(3,i)
+      END DO
+
       inferr = MAXVAL(ABS(dforces-tforces))
       relinferr = inferr / MAXVAL(ABS(dforces))
-      n2err = SQRT(DOT_PRODUCT(dforces-tforces,dforces-tforces))
-      reln2err = n2err / SQRT(DOT_PRODUCT(dforces,dforces))
+      
+      n2err = DOT_PRODUCT(dforces(1,:)-tforces(1,:),dforces(1,:)-tforces(1,:))
+      n2err = n2err+DOT_PRODUCT(dforces(2,:)-tforces(2,:),dforces(2,:)-tforces(2,:))
+      n2err = n2err+DOT_PRODUCT(dforces(3,:)-tforces(3,:),dforces(3,:)-tforces(3,:))
+      n2err = SQRT(n2err)
+
+      reln2err = DOT_PRODUCT(dforces(1,:),dforces(1,:))
+      reln2err = reln2err+DOT_PRODUCT(dforces(2,:),dforces(2,:))
+      reln2err = reln2err+DOT_PRODUCT(dforces(3,:),dforces(3,:))
+      reln2err = n2err / SQRT(reln2err)
 
 ! output errors to standard out
 
@@ -237,7 +270,6 @@
  13   FORMAT(E24.16)
  15   FORMAT(I8,2X,I8,2X,I4,2X,I3,2X,F12.8)
  16   FORMAT(E24.16,2X,E24.16,2X,F24.16,2X,F24.16) 
- 17   FORMAT(14X,E24.16)
 100   FORMAT(A7, A5, A5, A7, A6, F8.3, F8.3, F8.3, F8.4, A8, A9) 
 
       END PROGRAM TREEDRIVER
