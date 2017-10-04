@@ -226,9 +226,9 @@
       END DO
 
       DO jj=1,numparsT
-          dforces(1,jj) = qT(jj) * dforces(1,jj)
-          dforces(2,jj) = qT(jj) * dforces(2,jj)
-          dforces(3,jj) = qT(jj) * dforces(3,jj)
+          dforces(1,jj) = -qT(jj) * dforces(1,jj)
+          dforces(2,jj) = -qT(jj) * dforces(2,jj)
+          dforces(3,jj) = -qT(jj) * dforces(3,jj)
       END DO
 
       dforces = dforces * voxvol

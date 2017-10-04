@@ -433,9 +433,9 @@
           !    force = force + forcetemp
           !END DO
 
-          forcesT(1,i) = tarposq * force(1)
-          forcesT(2,i) = tarposq * force(2)
-          forcesT(3,i) = tarposq * force(3)
+          forcesT(1,i) = -tarposq * force(1)
+          forcesT(2,i) = -tarposq * force(2)
+          forcesT(3,i) = -tarposq * force(3)
 
       END DO
 
